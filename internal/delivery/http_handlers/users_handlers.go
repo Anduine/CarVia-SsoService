@@ -4,23 +4,21 @@ import (
 	"encoding/json"
 	"log/slog"
 	"net/http"
-	"sso/internal/domain"
-	"sso/internal/service"
-	"sso/pkg/auth"
-	"strings"
+	"sso-service/internal/domain"
+	"sso-service/internal/lib/responseHTTP"
+	"sso-service/internal/service"
+	"sso-service/pkg/auth"
 	"time"
 )
 
 type UsersHandler struct {
-	log *slog.Logger
-	service *service.UsersService
+	service  *service.UsersService
 	tokenTTL time.Duration
 }
 
-func NewUsersHandler(log *slog.Logger, service *service.UsersService, tokenTTL time.Duration) *UsersHandler {
+func NewUsersHandler(service *service.UsersService, tokenTTL time.Duration) *UsersHandler {
 	return &UsersHandler{
-		log: log,
-		service: service, 
+		service:  service,
 		tokenTTL: tokenTTL,
 	}
 }
@@ -30,156 +28,149 @@ func (h *UsersHandler) RegisterHandler(w http.ResponseWriter, r *http.Request) {
 
 	err := json.NewDecoder(r.Body).Decode(&regRequest)
 	if err != nil {
-		http.Error(w, "Неправильний запит", http.StatusBadRequest)
+		responseHTTP.JSONError(w, http.StatusBadRequest, "Неправильний запит")
 		return
 	}
 
 	exists, err := h.service.ExistsByEmail(r.Context(), regRequest.Email)
 	if err != nil {
-		h.log.Error("Ошибка в проверке: ", slog.Any("Error:", err))
-		http.Error(w, "Помилка на сервері", http.StatusInternalServerError)
+		slog.Debug("Помилка при перевірці email", "err", err.Error())
+		responseHTTP.JSONError(w, http.StatusInternalServerError, "Помилка на сервері")
 		return
 	}
 	if exists {
-		w.Header().Set("Content-Type", "application/json")
-		http.Error(w, "Користувач з таким email вже існує", http.StatusConflict)
+		responseHTTP.JSONError(w, http.StatusConflict, "Користувач з таким email вже існує")
 		return
 	}
 
 	if err := h.service.CreateUser(r.Context(), &regRequest); err != nil {
-		h.log.Error("Ошибка при создании пользователя: ", slog.Any("Error:", err)) 
-		http.Error(w, "Помилка на сервері", http.StatusInternalServerError)
+		slog.Debug("Помилка при створені користувача", "err", err.Error())
+		responseHTTP.JSONError(w, http.StatusInternalServerError, "Помилка на сервері")
 		return
 	}
 
 	token, err := auth.CreateToken(regRequest.Login, regRequest.UserID, h.tokenTTL)
 	if err != nil {
-		h.log.Error("Ошибка создании токена: ", slog.Any("Error:", err)) 
-		http.Error(w, "Помилка на сервері", http.StatusInternalServerError)
+		slog.Debug("Помилка при створені токена", "err", err.Error())
+		responseHTTP.JSONError(w, http.StatusInternalServerError, "Помилка на сервері")
 		return
 	}
 
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(map[string]string{"token": token})
+	response := domain.TokenResponse{
+		Token: token,
+	}
+
+	responseHTTP.JSONResp(w, http.StatusOK, response)
 }
 
 func (h *UsersHandler) LoginHandler(w http.ResponseWriter, r *http.Request) {
 	var loginReq domain.LoginRequest
 
-	//log.Println("Запрос логина: ", r.Header, r.Body)
-
 	err := json.NewDecoder(r.Body).Decode(&loginReq)
 	if err != nil {
-		h.log.Info("Ошибка при логине: ", slog.Any("Error:", err))
-		http.Error(w, "Неправильний запит", http.StatusBadRequest)
+		slog.Debug("Помилка при декодуванні loginReq", "err", err.Error())
+		responseHTTP.JSONError(w, http.StatusBadRequest, "Неправильний запит")
 		return
 	}
 
-	user, err := h.service.GetByUsername(r.Context(), loginReq.Login)
+	user, err := h.service.GetByEmail(r.Context(), loginReq.Email)
 	if err != nil {
-		h.log.Info("Пользователь не найден: ", slog.Any("Error:", err))
-		http.Error(w, "Користувач не знайден", http.StatusUnauthorized)
+		slog.Debug("Користувача не знайдено", "err", err.Error())
+		responseHTTP.JSONError(w, http.StatusUnauthorized, "Користувача не знайдено")
 		return
 	}
 
 	if err := auth.CheckPassword(user.HashPassword, loginReq.Password); err != nil {
-		h.log.Info("Неверный пароль", slog.Any("Error:", err))
-		http.Error(w, "Неправильний пароль", http.StatusUnauthorized)
+		slog.Debug("Неправильний пароль", "err", err.Error())
+		responseHTTP.JSONError(w, http.StatusUnauthorized, "Неправильний пароль")
 		return
 	}
 
 	token, err := auth.CreateToken(user.Login, user.UserID, h.tokenTTL)
 	if err != nil {
-		h.log.Info("Ошибка при создании токена: ", slog.Any("Error:", err))
-		http.Error(w, "Помилка на сервері", http.StatusInternalServerError)
+		slog.Debug("Помилка при створені токена", "err", err.Error())
+		responseHTTP.JSONError(w, http.StatusInternalServerError, "Помилка на сервері")
 		return
 	}
 
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(map[string]string{"token": token})
+	response := domain.TokenResponse{
+		Token: token,
+	}
+
+	responseHTTP.JSONResp(w, http.StatusOK, response)
 }
 
 func (h *UsersHandler) UserProfileHandler(w http.ResponseWriter, r *http.Request) {
-	authHeader := r.Header.Get("Authorization")
-	if authHeader == "" {
-		h.log.Info("Ошибка при проверке токена: ", slog.Any("Auth Header:", authHeader))
-		http.Error(w, "Помилка на сервері", http.StatusInternalServerError)
+	username, ok := r.Context().Value("username").(string)
+	if !ok {
+		slog.Debug("Помилка при отриманні username з context")
+		responseHTTP.JSONError(w, http.StatusUnauthorized, "Не авторизовано")
 		return
 	}
 
-	tokenStr := strings.TrimPrefix(authHeader, "Bearer ")
-	if tokenStr == "" {
-		h.log.Info("Ошибка при проверке Bearer: ", slog.Any("Token:", tokenStr))
-		http.Error(w, "Помилка на сервері", http.StatusInternalServerError)
-		return
-	}
+	slog.Debug("Запит на отримання профілю")
 
-	claims, err := auth.ParseToken(tokenStr)
+	user, err := h.service.GetByUsername(r.Context(), username)
 	if err != nil {
-		h.log.Info("Ошибка при парсинге токена: ", slog.Any("Error:", err))
-		http.Error(w, "Не авторизовано", http.StatusUnauthorized)
+		slog.Debug("Помилка при отриманні користувача", "err", err.Error())
+		responseHTTP.JSONError(w, http.StatusInternalServerError, "Помилка на сервері")
 		return
 	}
 
-	user, err := h.service.GetByUsername(r.Context(), claims.Username)
-	if err != nil {
-		h.log.Error("Ошибка при получении пользователя:", slog.Any("Error:", err))
-		http.Error(w, "Помилка на сервері", http.StatusInternalServerError)
-		return
-	}
-	
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(user)
+	responseHTTP.JSONResp(w, http.StatusOK, user)
 }
 
 func (h *UsersHandler) UpdateUserProfileHandler(w http.ResponseWriter, r *http.Request) {
-	userID := r.Context().Value("user_id").(int)
+	userID, ok := r.Context().Value("user_id").(int)
+	if !ok {
+		slog.Debug("Помилка при отриманні user_id з context")
+		responseHTTP.JSONError(w, http.StatusUnauthorized, "Не авторизовано")
+		return
+	}
 
-	err := r.ParseMultipartForm(10 << 20) // 10MB
+	err := r.ParseMultipartForm(10 << 20)
 	if err != nil {
-		h.log.Error("Помилка парсингу форми: ", slog.Any("Error:", err))
-		http.Error(w, "Помилка парсингу форми", http.StatusBadRequest)
+		slog.Debug("Помилка парсингу форми", "err", err.Error())
+		responseHTTP.JSONError(w, http.StatusBadRequest, "Помилка парсингу форми")
 		return
 	}
 
 	userData := domain.UserUpdateRequest{
-		UserID:     userID,
-		Login:      r.FormValue("login"),
-		Password:   r.FormValue("password"),
-		FirstName:  r.FormValue("first_name"),
-		LastName:   r.FormValue("last_name"),
-		Email:      r.FormValue("email"),
-		Phone:      r.FormValue("phonenumber"),
-		Address:    r.FormValue("address"),
+		UserID:      userID,
+		Login:       r.FormValue("Login"),
+		Password:    r.FormValue("Password"),
+		FirstName:   r.FormValue("FirstName"),
+		LastName:    r.FormValue("LastName"),
+		Email:       r.FormValue("Email"),
+		Phonenumber: r.FormValue("Phonenumber"),
+		Address:     r.FormValue("Address"),
 	}
 
 	if userData.Login == "" || userData.Password == "" || userData.FirstName == "" ||
-	userData.LastName == "" || userData.Email == "" || userData.Phone == "" || userData.Address == "" {
-		http.Error(w, "Усі поля повинні бути заповнені", http.StatusBadRequest)
+		userData.LastName == "" || userData.Email == "" || userData.Phonenumber == "" || userData.Address == "" {
+		slog.Debug("Не всі поля заповнені", "userData", userData)
+		responseHTTP.JSONError(w, http.StatusBadRequest, "Усі поля повинні бути заповнені")
 		return
 	}
 
-	// Обробка аватара (необов'язкове)
-	file, header, err := r.FormFile("avatar")
+	file, header, err := r.FormFile("Avatar")
 	if err == nil {
 		defer file.Close()
-		avatarPath, saveErr := h.service.SaveAvatarFile(userID, file, header)
+		avatarPath, saveErr := h.service.SaveAvatar(header)
 		if saveErr != nil {
-			h.log.Error("Помилка збереження аватара: ", slog.Any("Error:", saveErr))
-			http.Error(w, "Помилка на сервері", http.StatusInternalServerError)
+			slog.Debug("Помилка збереження аватара", "err", saveErr.Error())
+			responseHTTP.JSONError(w, http.StatusInternalServerError, "Помилка на сервері")
 			return
 		}
-		userData.AvatarPath = &avatarPath
+		userData.AvatarPath = avatarPath
 	}
 
-	if err := h.service.UpdateUserProfile(r.Context(), userData); err != nil {
-		h.log.Error("Помилка оновлення профілю: ", slog.Any("Error:", err))
-		http.Error(w, "Помилка на сервері", http.StatusInternalServerError)
+	err = h.service.UpdateUserProfile(r.Context(), userData)
+	if err != nil {
+		slog.Debug("Помилка оновлення профілю", "err", err.Error())
+		responseHTTP.JSONError(w, http.StatusInternalServerError, "Помилка на сервері")
 		return
 	}
 
-	w.WriteHeader(http.StatusOK)
-	json.NewEncoder(w).Encode(map[string]string{
-		"message": "Профіль оновлено успішно",
-	})
+	responseHTTP.JSONResp(w, http.StatusOK, "Профіль оновлено")
 }

@@ -1,4 +1,0 @@
-token_ttl: 24h
-
-port: 3012
-timeout: 5s

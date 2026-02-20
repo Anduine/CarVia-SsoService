@@ -10,10 +10,18 @@ import (
 )
 
 type Config struct {
-	DBConnector string
-	TokenTTL	time.Duration 	`yaml:"token_ttl" env-required:"true"`
-	Port        string   		`yaml:"port"`
-	Timeout     time.Duration 	`yaml:"timeout"`
+	DB         DBConfig
+	TokenTTL   time.Duration `yaml:"token_ttl" env-required:"true"`
+	Port       string        `yaml:"port"`
+	Timeout    time.Duration `yaml:"timeout"`
+	StorageURL string        `yaml:"storage_service_url"`
+}
+
+type DBConfig struct {
+	Host     string
+	DBName   string
+	User     string
+	Password string
 }
 
 func MustLoadConfig() *Config {
@@ -34,9 +42,7 @@ func MustLoadConfig() *Config {
 		panic("Failed to unmarshal yaml")
 	}
 
-	dbConn := getDBconfig()
-
-	cfg.DBConnector = dbConn
+	cfg.DB = getDBconfig()
 
 	return &cfg
 }
@@ -55,16 +61,36 @@ func fetchConfigPath() string {
 	return result
 }
 
-func getDBconfig() string {
+func getDBconfig() DBConfig {
 	err := godotenv.Load()
 	if err != nil {
 		panic("Failed to load .env file")
 	}
 
-	connStr := os.Getenv("DB_CONN")
-	if connStr == "" {
-		panic("DB_CONN is not set")
+	host := os.Getenv("DB_HOST")
+	if host == "" {
+		panic("DB_HOST is not set")
 	}
 
-	return connStr
+	dbName := os.Getenv("DB_NAME")
+	if dbName == "" {
+		panic("DB_NAME is not set")
+	}
+
+	user := os.Getenv("DB_USER")
+	if user == "" {
+		panic("DB_USER is not set")
+	}
+
+	password := os.Getenv("DB_PASSWORD")
+	if password == "" {
+		panic("DB_PASSWORD is not set")
+	}
+
+	return DBConfig{
+		Host:     host,
+		DBName:   dbName,
+		User:     user,
+		Password: password,
+	}
 }

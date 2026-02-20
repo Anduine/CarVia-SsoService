@@ -21,7 +21,7 @@ func CreateToken(username string, userID int, tokenTTL time.Duration) (string, e
 
 	claims := &JWTToken{
 		Username: username,
-		UserID: userID,
+		UserID:   userID,
 		StandardClaims: jwt.StandardClaims{
 			ExpiresAt: expirationTime,
 			Issuer:    "sso_service",
@@ -30,7 +30,6 @@ func CreateToken(username string, userID int, tokenTTL time.Duration) (string, e
 
 	token := jwt.NewWithClaims(jwt.SigningMethodHS256, claims)
 
-	// Подписываем токен
 	tk, err := token.SignedString(jwtKey)
 	if err != nil {
 		return "", fmt.Errorf("could not create token: %v", err)
@@ -40,7 +39,7 @@ func CreateToken(username string, userID int, tokenTTL time.Duration) (string, e
 }
 
 func ParseToken(tokenStr string) (*JWTToken, error) {
-	token, err := jwt.ParseWithClaims(tokenStr, &JWTToken{}, func(token *jwt.Token) (interface{}, error) {
+	token, err := jwt.ParseWithClaims(tokenStr, &JWTToken{}, func(token *jwt.Token) (any, error) {
 		return jwtKey, nil
 	})
 	if err != nil {
@@ -53,4 +52,26 @@ func ParseToken(tokenStr string) (*JWTToken, error) {
 	}
 
 	return claims, nil
+}
+
+func UserIDFromToken(tokenString string) (int, error) {
+	token, err := jwt.Parse(tokenString, func(token *jwt.Token) (any, error) {
+		return jwtKey, nil
+	})
+
+	if err != nil || !token.Valid {
+		return 0, fmt.Errorf("invalid token")
+	}
+
+	claims, ok := token.Claims.(jwt.MapClaims)
+	if !ok {
+		return 0, fmt.Errorf("cannot parse token claims")
+	}
+
+	userIDFloat, ok := claims["user_id"].(float64)
+	if !ok {
+		return 0, fmt.Errorf("user_id not found in token")
+	}
+
+	return int(userIDFloat), nil
 }

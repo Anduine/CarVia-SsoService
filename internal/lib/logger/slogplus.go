@@ -1,4 +1,4 @@
-package slogplus
+package logger
 
 import (
 	"context"
@@ -15,15 +15,25 @@ type PlusHandlerOptions struct {
 }
 
 type PlusHandler struct {
-	//opts PlusHandlerOptions
 	slog.Handler
 	l     *stdLog.Logger
 	attrs []slog.Attr
 }
 
-func (opts PlusHandlerOptions) NewPlusHandler(
-	out io.Writer,
-) *PlusHandler {
+func InitGlobalLogger(writer io.Writer, level slog.Level) {
+	opts := PlusHandlerOptions{
+		SlogOpts: &slog.HandlerOptions{
+			Level: level,
+		},
+	}
+
+	handler := opts.NewPlusHandler(writer)
+	logger := slog.New(handler)
+
+	slog.SetDefault(logger)
+}
+
+func (opts PlusHandlerOptions) NewPlusHandler(out io.Writer) *PlusHandler {
 	h := &PlusHandler{
 		Handler: slog.NewJSONHandler(out, opts.SlogOpts),
 		l:       stdLog.New(out, "", 0),
@@ -68,11 +78,12 @@ func (h *PlusHandler) Handle(_ context.Context, rec slog.Record) error {
 		}
 	}
 
-	timeStr := rec.Time.Format("15:04:05.000 >")
+	timeStr := rec.Time.Format("15:04:05.000")
 	msg := color.CyanString(rec.Message)
 
 	h.l.Println(
 		timeStr,
+		">",
 		level,
 		msg,
 		color.WhiteString(string(b)),

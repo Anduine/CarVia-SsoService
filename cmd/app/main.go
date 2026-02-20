@@ -3,28 +3,15 @@ package main
 import (
 	"log/slog"
 	"os"
-	"sso/internal/app"
-	"sso/internal/config"
-	pluslog "sso/internal/lib/logger"
+	"sso-service/internal/app"
+	"sso-service/internal/config"
+	"sso-service/internal/lib/logger"
 )
 
 func main() {
+	config := config.MustLoadConfig()
 
-	cfg := config.MustLoadConfig()
+	logger.InitGlobalLogger(os.Stdout, slog.LevelDebug)
 
-	log := setupPlusSlog()
-
-	app.Run(log, cfg.Port, cfg.DBConnector, cfg.Timeout, cfg.TokenTTL)
-}
-
-func setupPlusSlog() *slog.Logger {
-	opts := pluslog.PlusHandlerOptions{
-		SlogOpts: &slog.HandlerOptions{
-			Level: slog.LevelDebug,
-		},
-	}
-
-	handler := opts.NewPlusHandler(os.Stdout)
-
-	return slog.New(handler)
+	app.Run(config)
 }

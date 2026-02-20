@@ -4,9 +4,9 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
-	"log"
+	"log/slog"
 
-	"sso/internal/domain"
+	"sso-service/internal/domain"
 )
 
 type PostgresUserRepo struct {
@@ -24,7 +24,7 @@ func (r *PostgresUserRepo) CreateUser(ctx context.Context, user domain.User) (in
 
 	var userID int
 
-	err := r.db.QueryRowContext(ctx, query, user.Login, user.HashPassword, user.Role, user.Email, user.Address, user.Phone, user.FirstName, user.LastName).Scan(&userID)
+	err := r.db.QueryRowContext(ctx, query, user.Login, user.HashPassword, user.Role, user.Email, user.Address, user.Phonenumber, user.FirstName, user.LastName).Scan(&userID)
 	return userID, err
 }
 
@@ -34,13 +34,42 @@ func (r *PostgresUserRepo) GetByUsername(ctx context.Context, username string) (
 
 	var user domain.User
 	var avatar sql.NullString
+
 	err := r.db.QueryRowContext(ctx, query, username).Scan(&user.UserID, &user.Login, &user.HashPassword, &user.Role,
-		&user.Email, &user.Address, &user.Phone, &user.FirstName, &user.LastName, &avatar)
+		&user.Email, &user.Address, &user.Phonenumber, &user.FirstName, &user.LastName, &avatar)
+
 	if err != nil {
 		if err == sql.ErrNoRows {
 			return user, fmt.Errorf("user not found")
 		}
-		log.Println("Ошибка при получении пользователя из БД:", err)
+		slog.Debug("Помилка при отриманні користувача з БД", "err", err.Error())
+		return user, err
+	}
+
+	if avatar.Valid {
+		user.AvatarPath = avatar.String
+	} else {
+		user.AvatarPath = ""
+	}
+
+	return user, nil
+}
+
+func (r *PostgresUserRepo) GetByEmail(ctx context.Context, email string) (domain.User, error) {
+	query := `SELECT user_id, login, hash_password, role, email, address, phonenumber, first_name, last_name, avatar_path
+	FROM users WHERE email = $1`
+
+	var user domain.User
+	var avatar sql.NullString
+
+	err := r.db.QueryRowContext(ctx, query, email).Scan(&user.UserID, &user.Login, &user.HashPassword, &user.Role,
+		&user.Email, &user.Address, &user.Phonenumber, &user.FirstName, &user.LastName, &avatar)
+
+	if err != nil {
+		if err == sql.ErrNoRows {
+			return user, fmt.Errorf("user not found")
+		}
+		slog.Debug("Помилка при отриманні користувача з БД", "err", err.Error())
 		return user, err
 	}
 
@@ -78,41 +107,43 @@ func (r *PostgresUserRepo) ExistsByUsername(ctx context.Context, username string
 }
 
 func (s *PostgresUserRepo) UpdateUserProfile(ctx context.Context, userData domain.UserUpdateRequest) error {
-	query := `
-		UPDATE users SET 
-			login = $2,
-			hash_password = $3,
-			first_name = $4,
-			last_name = $5,
-			email = $6,
-			phonenumber = $7,
-			address = $8
-			%s
-		WHERE user_id = $1;
+	baseQuery := `
+	UPDATE users SET 
+		login = $2,
+		hash_password = $3,
+		first_name = $4,
+		last_name = $5,
+		email = $6,
+		phonenumber = $7,
+		address = $8
+		%s
+	WHERE user_id = $1;
 	`
-	
-	args := []interface{}{
+
+	args := []any{
 		userData.UserID,
 		userData.Login,
 		userData.HashPassword,
 		userData.FirstName,
 		userData.LastName,
 		userData.Email,
-		userData.Phone,
+		userData.Phonenumber,
 		userData.Address,
 	}
 
-	avatarSQL := ""
-	if userData.AvatarPath != nil {
-		avatarSQL = ", avatar_path = $9"
-		args = append(args, *userData.AvatarPath)
+	avatarQuery := ""
+	if userData.AvatarPath != "" {
+		avatarQuery = ", avatar_path = $9"
+		args = append(args, userData.AvatarPath)
 	}
 
-	finalQuery := fmt.Sprintf(query, avatarSQL)
+	finalQuery := fmt.Sprintf(baseQuery, avatarQuery)
 
 	_, err := s.db.Exec(finalQuery, args...)
 	if err != nil {
-		log.Println("Ошибка при обновлении профиля пользователя:", err)
+		slog.Debug("Помилка при оновленні профіля користувача", "err", err.Error())
+		return err
 	}
-	return err
+
+	return nil
 }

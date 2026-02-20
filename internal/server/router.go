@@ -1,12 +1,12 @@
 package server
 
 import (
+	"log/slog"
 	"net/http"
-	"sso/internal/delivery/http_handlers"
-	"sso/pkg/auth"
+	"sso-service/internal/delivery/http_handlers"
+	"sso-service/pkg/auth"
 
 	"github.com/gorilla/mux"
-	"github.com/rs/cors"
 )
 
 func NewRouter(usersHandler *http_handlers.UsersHandler) http.Handler {
@@ -15,18 +15,18 @@ func NewRouter(usersHandler *http_handlers.UsersHandler) http.Handler {
 	router.HandleFunc("/api/sso/register", usersHandler.RegisterHandler).Methods("POST")
 	router.HandleFunc("/api/sso/login", usersHandler.LoginHandler).Methods("POST")
 
-	router.Handle("/api/sso/user_profile", auth.AuthMiddleware(http.HandlerFunc(usersHandler.UserProfileHandler)))
-	router.Handle("/api/sso/update_user_profile", auth.AuthMiddleware(http.HandlerFunc(usersHandler.UpdateUserProfileHandler)))
+	router.Handle("/api/sso/user_profile", auth.AuthMiddleware(usersHandler.UserProfileHandler)).Methods("GET")
+	router.Handle("/api/sso/update_user_profile", auth.AuthMiddleware(usersHandler.UpdateUserProfileHandler)).Methods("PUT")
 
-	router.HandleFunc("/api/sso/images/{filename}", http_handlers.ServeUserAvatar).Methods("GET")
+	router.NotFoundHandler = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		slog.Debug("Маршрут не знайдено", "method", r.Method, "path", r.URL.Path)
+		http.Error(w, "Маршрут не знайдено", http.StatusNotFound)
+	})
 
+	router.MethodNotAllowedHandler = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		slog.Debug("Заборонений метод", "method", r.Method, "path", r.URL.Path)
+		http.Error(w, "Заборонений метод", http.StatusMethodNotAllowed)
+	})
 
-	handler := cors.New(cors.Options{
-		AllowedOrigins:   []string{"http://localhost:3000", "http://localhost:3010"},
-		AllowedMethods:   []string{"GET", "POST", "OPTIONS", "PUT"},
-		AllowedHeaders:   []string{"Content-Type", "Authorization"},
-		AllowCredentials: true,
-	}).Handler(router)
-	
-	return handler
+	return router
 }

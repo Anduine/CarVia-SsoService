@@ -1,45 +1,110 @@
 package service
 
 import (
+	"bytes"
 	"context"
-	"errors"
+	"encoding/json"
+	"fmt"
 	"io"
-	"log"
+	"log/slog"
 	"mime/multipart"
-	"os"
+	"net/http"
 	"path/filepath"
-	"sso/internal/domain"
-	"sso/pkg/auth"
+	"sso-service/internal/domain"
+	"sso-service/pkg/auth"
+	"time"
 
 	"github.com/google/uuid"
 )
 
 type UsersService struct {
-	repo domain.UserRepository
+	repo              domain.UserRepository
+	storageServiceURL string
+	httpClient        http.Client
 }
 
-func NewUsersService(repo domain.UserRepository) *UsersService {
-	return &UsersService{repo: repo}
+func NewUsersService(repo domain.UserRepository, storageServiceURL string) *UsersService {
+	return &UsersService{
+		repo:              repo,
+		storageServiceURL: storageServiceURL,
+		httpClient:        http.Client{Timeout: 10 * time.Second},
+	}
 }
 
-func (s *UsersService) SaveAvatarFile(userID int, file multipart.File, fileHeader *multipart.FileHeader) (string, error) {
-	dir := "internal/storage/avatars"
-	os.MkdirAll(dir, os.ModePerm)
-
-	filename := uuid.New().String() + filepath.Ext(fileHeader.Filename)
-	path := filepath.Join(dir, filename)
-
-	dst, err := os.Create(path)
+func (s *UsersService) StorageRequest(requestURL string, requestBody *bytes.Buffer, contentType string) error {
+	req, err := http.NewRequest("POST", requestURL, requestBody)
 	if err != nil {
-		return "", err
-	}
-	defer dst.Close()
-
-	if _, err := io.Copy(dst, file); err != nil {
-		return "", err
+		return err
 	}
 
-	return filename, nil
+	req.Header.Set("Content-Type", contentType)
+
+	resp, err := s.httpClient.Do(req)
+	if err != nil {
+		return fmt.Errorf("помилка запиту до storage: %v", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusCreated {
+		bodyBytes, _ := io.ReadAll(resp.Body)
+		return fmt.Errorf("storage повернув помилку: %d, %s", resp.StatusCode, string(bodyBytes))
+	}
+
+	return nil
+}
+
+func (s *UsersService) SaveAvatar(fileHeader *multipart.FileHeader) (string, error) {
+	var newReqBody bytes.Buffer
+	writer := multipart.NewWriter(&newReqBody)
+
+	file, err := fileHeader.Open()
+	if err != nil {
+		slog.Debug("Помилка відкриття файлу", "err", err.Error())
+		return "", err
+	}
+	defer file.Close()
+
+	ext := filepath.Ext(fileHeader.Filename)
+	generatedName := fmt.Sprintf("%s%s", uuid.New().String(), ext)
+
+	part, err := writer.CreateFormFile("file", generatedName)
+	if err != nil {
+		slog.Debug("Помилка створення форми", "err", err.Error())
+		return "", err
+	}
+
+	if _, err := io.Copy(part, file); err != nil {
+		slog.Debug("Помилка копіювання файлу", "err", err.Error())
+		return "", err
+	}
+
+	err = writer.Close()
+	if err != nil {
+		slog.Debug("Помилка закриття writer", "err", err.Error())
+		return "", err
+	}
+
+	requestURL := fmt.Sprintf("%s/api/storage/upload_avatar", s.storageServiceURL)
+	if err := s.StorageRequest(requestURL, &newReqBody, writer.FormDataContentType()); err != nil {
+		slog.Debug("Помилка при збереженні аватара на сервісі storage", "err", err.Error())
+		return "", err
+	}
+
+	return generatedName, nil
+}
+
+func (s *UsersService) DeleteAvatar(filename string) error {
+	payload, err := json.Marshal(map[string]string{
+		"filename": filename,
+	})
+	if err != nil {
+		return err
+	}
+
+	requestURL := fmt.Sprintf("%s/api/storage/delete_avatar", s.storageServiceURL)
+	s.StorageRequest(requestURL, bytes.NewBuffer(payload), "application/json")
+
+	return nil
 }
 
 func (s *UsersService) CreateUser(ctx context.Context, req *domain.RegisterRequest) error {
@@ -48,7 +113,7 @@ func (s *UsersService) CreateUser(ctx context.Context, req *domain.RegisterReque
 		return err
 	}
 	if exists {
-		return errors.New("user already exists")
+		return fmt.Errorf("user already exists")
 	}
 
 	hashedPwd, err := auth.HashPassword(req.Password)
@@ -57,28 +122,32 @@ func (s *UsersService) CreateUser(ctx context.Context, req *domain.RegisterReque
 	}
 
 	user := domain.User{
-		Login:         req.Login,
-		Email:         req.Email,
-		Role:          "user",
-		HashPassword:  hashedPwd,
-		Address:       req.Address, 
-		Phone:   req.Phonenumber,
-		FirstName:     req.FirstName,
-		LastName:      req.LastName,
+		Login:        req.Login,
+		Email:        req.Email,
+		Role:         "user",
+		HashPassword: hashedPwd,
+		Address:      req.Address,
+		Phonenumber:  req.Phonenumber,
+		FirstName:    req.FirstName,
+		LastName:     req.LastName,
 	}
 
-  userID, err := s.repo.CreateUser(ctx, user)
+	userID, err := s.repo.CreateUser(ctx, user)
 
-  req.UserID = userID
+	req.UserID = userID
 	return err
 }
 
-func (s *UsersService) GetByUsername(ctx context.Context, username string) (domain.User, error) {
-	return s.repo.GetByUsername(ctx, username)
+func (s *UsersService) GetByEmail(ctx context.Context, email string) (domain.User, error) {
+	return s.repo.GetByEmail(ctx, email)
 }
 
 func (s *UsersService) ExistsByEmail(ctx context.Context, email string) (bool, error) {
 	return s.repo.ExistsByEmail(ctx, email)
+}
+
+func (s *UsersService) GetByUsername(ctx context.Context, username string) (domain.User, error) {
+	return s.repo.GetByUsername(ctx, username)
 }
 
 func (s *UsersService) ExistsByUsername(ctx context.Context, username string) (bool, error) {
@@ -88,7 +157,7 @@ func (s *UsersService) ExistsByUsername(ctx context.Context, username string) (b
 func (s *UsersService) UpdateUserProfile(ctx context.Context, userData domain.UserUpdateRequest) error {
 	hashPassword, err := auth.HashPassword(userData.Password)
 	if err != nil {
-		log.Println("Ошибка при хешировании пароля:", err)
+		slog.Debug("Ошибка при хешировании пароля:", "err", err.Error())
 		return err
 	}
 
